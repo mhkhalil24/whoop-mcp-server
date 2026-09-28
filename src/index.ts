@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import express, { type Request, type Response } from 'express';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -37,7 +37,39 @@ const config = {
 	dbPath: process.env.DB_PATH ?? './whoop.db',
 	port: Number.parseInt(process.env.PORT ?? '3000', 10),
 	mode: process.env.MCP_MODE ?? 'http',
+	// The MCP endpoint is served at /mcp/<MCP_PATH_SECRET>. Anyone without the
+	// secret gets a 404, so the URL itself is the credential. Required in http mode.
+	mcpPathSecret: process.env.MCP_PATH_SECRET ?? '',
 };
+
+function secretMatches(candidate: string): boolean {
+	// Hash both sides so timingSafeEqual always compares equal-length buffers.
+	const a = createHash('sha256').update(candidate).digest();
+	const b = createHash('sha256').update(config.mcpPathSecret).digest();
+	return timingSafeEqual(a, b);
+}
+
+// OAuth `state` values issued by get_auth_url, checked on /callback so nobody
+// can bind a different Whoop account to this server. In-memory is fine: single
+// instance, and a restart only means re-running get_auth_url.
+const OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
+const pendingOAuthStates = new Map<string, number>();
+
+function issueOAuthState(): string {
+	const now = Date.now();
+	for (const [state, issuedAt] of pendingOAuthStates) {
+		if (now - issuedAt > OAUTH_STATE_TTL_MS) pendingOAuthStates.delete(state);
+	}
+	const state = randomUUID();
+	pendingOAuthStates.set(state, now);
+	return state;
+}
+
+function consumeOAuthState(state: string): boolean {
+	const issuedAt = pendingOAuthStates.get(state);
+	pendingOAuthStates.delete(state);
+	return issuedAt !== undefined && Date.now() - issuedAt <= OAUTH_STATE_TTL_MS;
+}
 
 const db = new WhoopDatabase(config.dbPath);
 const client = new WhoopClient({
@@ -489,7 +521,7 @@ function createMcpServer(): Server {
 
 				case 'get_auth_url': {
 					const scopes = ['read:profile', 'read:body_measurement', 'read:cycles', 'read:recovery', 'read:sleep', 'read:workout', 'offline'];
-					const url = client.getAuthorizationUrl(scopes);
+					const url = client.getAuthorizationUrl(scopes, issueOAuthState());
 					return {
 						content: [{
 							type: 'text',
@@ -555,16 +587,25 @@ async function main(): Promise<void> {
 		await server.connect(transport);
 		process.stderr.write('Whoop MCP server running on stdio\n');
 	} else {
+		if (config.mcpPathSecret.length < 32) {
+			throw new Error('MCP_PATH_SECRET must be set to at least 32 characters in http mode');
+		}
+
 		const app = express();
 		app.use((req, res, next) => {
-			if (req.path === '/mcp') return next();
+			if (req.path.startsWith('/mcp/')) return next();
 			express.json()(req, res, next);
 		});
 
 		app.get('/callback', async (req: Request, res: Response) => {
 			const code = req.query.code as string | undefined;
+			const state = req.query.state as string | undefined;
 			if (!code) {
 				res.status(400).send('Missing authorization code');
+				return;
+			}
+			if (!state || !consumeOAuthState(state)) {
+				res.status(400).send('Invalid or expired state. Run get_auth_url again.');
 				return;
 			}
 
@@ -590,6 +631,11 @@ async function main(): Promise<void> {
 			res.status(200).json({});
 		});
 
+		// Clients probe metadata under the full resource path (/mcp/<secret>).
+		app.get('/.well-known/oauth-protected-resource/mcp/*', (_req: Request, res: Response) => {
+			res.status(200).json({});
+		});
+
 		app.get('/.well-known/oauth-authorization-server', (_req: Request, res: Response) => {
 			res.status(200).json({});
 		});
@@ -598,7 +644,12 @@ async function main(): Promise<void> {
 			res.status(200).json({});
 		});
 
-		app.all('/mcp', async (req: Request, res: Response) => {
+		app.all('/mcp/:secret', async (req: Request, res: Response) => {
+			if (!secretMatches(req.params.secret ?? '')) {
+				res.status(404).send('Not found');
+				return;
+			}
+
 			const sessionId = req.headers['mcp-session-id'] as string | undefined;
 			const requestStart = Date.now();
 
