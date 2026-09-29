@@ -28,6 +28,8 @@ interface ToolArguments {
 	cycle_id?: number;
 	limit?: number;
 	confirm?: boolean;
+	from?: string;
+	to?: string;
 }
 
 const config = {
@@ -271,10 +273,14 @@ function createMcpServer(): Server {
 			},
 			{
 				name: 'export_data',
-				description: 'Returns a compact JSON backup of stored Whoop data for the last N days: cycles, recovery, sleep and workouts in that window, plus profile, body_measurement and sync_state. Syncs first. Intended to be saved verbatim as a backup file; never includes OAuth tokens.',
+				description: 'Returns a compact JSON backup of stored Whoop data for a date window: cycles, recovery, sleep and workouts in that window, plus profile, body_measurement and sync_state. Pass either `from`/`to` dates or `days` (last N days). Syncs first. Intended to be saved verbatim as a backup file; never includes OAuth tokens.',
 				inputSchema: {
 					type: 'object',
-					properties: { days: { type: 'number', description: 'Number of days to include (default: 14, max: 365)' } },
+					properties: {
+						from: { type: 'string', description: 'Start date YYYY-MM-DD (UTC, inclusive). Use with `to`.' },
+						to: { type: 'string', description: 'End date YYYY-MM-DD (UTC, inclusive). Defaults to today.' },
+						days: { type: 'number', description: 'Alternative to from/to: number of days back from today (default: 14, max: 365)' },
+					},
 					required: [],
 				},
 			},
@@ -544,16 +550,32 @@ function createMcpServer(): Server {
 				}
 
 				case 'export_data': {
-					const days = validateDays(typedArgs.days);
+					const isDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v));
 					const now = new Date();
-					const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+					const today = now.toISOString().split('T')[0];
+					let from: string;
+					let to: string;
+					if (typedArgs.from !== undefined || typedArgs.to !== undefined) {
+						if (!isDate(typedArgs.from) || (typedArgs.to !== undefined && !isDate(typedArgs.to))) {
+							return { content: [{ type: 'text', text: JSON.stringify({ error: 'from/to must be YYYY-MM-DD dates.' }) }], isError: true };
+						}
+						from = typedArgs.from;
+						to = typedArgs.to ?? today;
+						if (from > to) {
+							return { content: [{ type: 'text', text: JSON.stringify({ error: 'from must be on or before to.' }) }], isError: true };
+						}
+					} else {
+						const days = validateDays(typedArgs.days);
+						from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+						to = today;
+					}
 					return {
 						content: [{
 							type: 'text',
 							text: JSON.stringify({
 								exported_at: now.toISOString(),
-								window: { days, from: from.toISOString().split('T')[0], to: now.toISOString().split('T')[0] },
-								...db.exportRecent(days),
+								window: { from, to },
+								...db.exportRange(from, to),
 							}),
 						}],
 					};
