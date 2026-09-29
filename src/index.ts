@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { WhoopClient } from './whoop-client.js';
 import { WhoopDatabase } from './database.js';
-import { WhoopSync } from './sync.js';
+import { WhoopSync, MAX_HISTORY_DAYS } from './sync.js';
 
 // Single source of truth for server identity. Reads package.json at startup.
 // To bump version, edit package.json only. Do not hardcode version strings.
@@ -124,7 +124,7 @@ function validateDays(value: unknown, defaultDays = 14): number {
 	if (value === undefined || value === null) return defaultDays;
 	const num = typeof value === 'number' ? value : Number.parseInt(String(value), 10);
 	if (Number.isNaN(num) || num < 1) return defaultDays;
-	return Math.min(num, 90);
+	return Math.min(num, MAX_HISTORY_DAYS);
 }
 
 function validateBoolean(value: unknown): boolean {
@@ -137,7 +137,7 @@ function validateLimit(value: unknown, defaultLimit = 25): number {
 	if (value === undefined || value === null) return defaultLimit;
 	const num = typeof value === 'number' ? value : Number.parseInt(String(value), 10);
 	if (Number.isNaN(num) || num < 1) return defaultLimit;
-	return Math.min(num, 100);
+	return Math.min(num, 500);
 }
 
 function createMcpServer(): Server {
@@ -158,7 +158,7 @@ function createMcpServer(): Server {
 				description: 'Returns raw JSON array of daily recovery records with full fields: date, recovery_score, hrv_rmssd, resting_hr, spo2, skin_temp, user_calibrating, score_state, sleep_id, created_at, synced_at. Includes days_requested and record_count.',
 				inputSchema: {
 					type: 'object',
-					properties: { days: { type: 'number', description: 'Number of days to analyze (default: 14, max: 90)' } },
+					properties: { days: { type: 'number', description: 'Number of days to analyze (default: 14, max: 365)' } },
 					required: [],
 				},
 			},
@@ -167,7 +167,7 @@ function createMcpServer(): Server {
 				description: 'Returns raw JSON array of daily sleep records with full fields: id (UUID), cycle_id, start_time, end_time, is_nap, score_state, all stage durations (in_bed, awake, light, deep, REM, no_data), sleep_cycle_count, disturbance_count, performance, efficiency, consistency, respiratory_rate, sleep_needed breakdown (baseline, debt, strain, nap), synced_at. Includes days_requested and record_count.',
 				inputSchema: {
 					type: 'object',
-					properties: { days: { type: 'number', description: 'Number of days to analyze (default: 14, max: 90)' } },
+					properties: { days: { type: 'number', description: 'Number of days to analyze (default: 14, max: 365)' } },
 					required: [],
 				},
 			},
@@ -176,7 +176,7 @@ function createMcpServer(): Server {
 				description: 'Returns raw JSON array of daily cycle records with full fields: id, user_id, start_time, end_time, score_state, strain, kilojoule, avg_hr, max_hr, synced_at. Includes days_requested and record_count.',
 				inputSchema: {
 					type: 'object',
-					properties: { days: { type: 'number', description: 'Number of days to analyze (default: 14, max: 90)' } },
+					properties: { days: { type: 'number', description: 'Number of days to analyze (default: 14, max: 365)' } },
 					required: [],
 				},
 			},
@@ -186,8 +186,8 @@ function createMcpServer(): Server {
 				inputSchema: {
 					type: 'object',
 					properties: {
-						days: { type: 'number', description: 'Number of days to look back (default: 14, max: 90)' },
-						limit: { type: 'number', description: 'Maximum number of workouts to return (default: 25, max: 100)' },
+						days: { type: 'number', description: 'Number of days to look back (default: 14, max: 365)' },
+						limit: { type: 'number', description: 'Maximum number of workouts to return (default: 25, max: 500)' },
 					},
 					required: [],
 				},
@@ -252,7 +252,7 @@ function createMcpServer(): Server {
 				description: 'Triggers a Whoop data sync. Returns raw JSON with status (complete or skipped), full_sync flag, and stats object (cycles, recoveries, sleeps, workouts, profile, body_measurement counts).',
 				inputSchema: {
 					type: 'object',
-					properties: { full: { type: 'boolean', description: 'Force a full 90-day sync (default: false)' } },
+					properties: { full: { type: 'boolean', description: 'Force a full 365-day sync (default: false)' } },
 					required: [],
 				},
 			},
@@ -498,7 +498,7 @@ function createMcpServer(): Server {
 					let skipped = false;
 
 					if (full) {
-						stats = await sync.syncDays(90);
+						stats = await sync.syncDays(MAX_HISTORY_DAYS);
 					} else {
 						const result = await sync.smartSync();
 						if (result.type === 'skip') {
@@ -614,7 +614,7 @@ async function main(): Promise<void> {
 			try {
 				const tokens = await client.exchangeCodeForTokens(code);
 				db.saveTokens(tokens);
-				sync.syncDays(90).catch(() => {});
+				sync.syncDays(MAX_HISTORY_DAYS).catch(() => {});
 				res.send('Authorization successful! You can close this window.');
 			} catch {
 				res.status(500).send('Authorization failed. Please try again.');

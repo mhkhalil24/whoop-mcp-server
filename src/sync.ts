@@ -1,6 +1,9 @@
 import { WhoopClient } from './whoop-client.js';
 import { WhoopDatabase } from './database.js';
 
+// How far back a full sync fetches from Whoop, and the max look-back for queries.
+export const MAX_HISTORY_DAYS = 365;
+
 interface SyncStats {
 	cycles: number;
 	recoveries: number;
@@ -27,7 +30,7 @@ export class WhoopSync {
 	private readonly SYNC_FRESHNESS_MS = 10 * 60 * 1000;
 
 	// Full-sync threshold. If the last sync is older than this, smartSync()
-	// performs a 90-day full sync instead of the default 7-day quick sync.
+	// performs a full-history sync (MAX_HISTORY_DAYS) instead of the default 7-day quick sync.
 	private readonly FULL_SYNC_THRESHOLD_HOURS = 24;
 
 	constructor(client: WhoopClient, db: WhoopDatabase) {
@@ -35,7 +38,7 @@ export class WhoopSync {
 		this.db = db;
 	}
 
-	async syncDays(days = 90): Promise<SyncStats> {
+	async syncDays(days = MAX_HISTORY_DAYS): Promise<SyncStats> {
 		const endDate = new Date();
 		const startDate = new Date();
 		startDate.setDate(startDate.getDate() - days);
@@ -103,7 +106,7 @@ export class WhoopSync {
 	async smartSync(): Promise<SmartSyncResult> {
 		const state = this.db.getSyncState();
 		if (!state.lastSyncAt) {
-			const stats = await this.syncDays(90);
+			const stats = await this.syncDays(MAX_HISTORY_DAYS);
 			return { type: 'full', stats };
 		}
 
