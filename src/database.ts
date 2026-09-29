@@ -116,7 +116,7 @@ export class WhoopDatabase {
 			CREATE TABLE IF NOT EXISTS workouts (
 				id TEXT PRIMARY KEY,
 				user_id INTEGER NOT NULL,
-				sport_id INTEGER NOT NULL,
+				sport_id INTEGER,
 				sport_name TEXT,
 				start_time TEXT NOT NULL,
 				end_time TEXT NOT NULL,
@@ -199,6 +199,48 @@ export class WhoopDatabase {
 		}
 		if (!workoutColNames.has('altitude_change_meter')) {
 			this.db.exec('ALTER TABLE workouts ADD COLUMN altitude_change_meter REAL');
+		}
+
+		// Whoop returns some workouts without sport_id (sport_name is the
+		// replacement), which the original NOT NULL constraint rejected. SQLite
+		// can't drop a constraint in place, so rebuild the table once.
+		const sportIdCol = (this.db.prepare("PRAGMA table_info(workouts)").all() as { name: string; notnull: number }[])
+			.find(c => c.name === 'sport_id');
+		if (sportIdCol?.notnull === 1) {
+			const cols = 'id, user_id, sport_id, sport_name, start_time, end_time, score_state, strain, avg_hr, max_hr, kilojoule, percent_recorded, distance_meter, altitude_gain_meter, altitude_change_meter, zone_zero_milli, zone_one_milli, zone_two_milli, zone_three_milli, zone_four_milli, zone_five_milli, synced_at';
+			this.db.transaction(() => {
+				this.db.exec(`
+					CREATE TABLE workouts_new (
+						id TEXT PRIMARY KEY,
+						user_id INTEGER NOT NULL,
+						sport_id INTEGER,
+						sport_name TEXT,
+						start_time TEXT NOT NULL,
+						end_time TEXT NOT NULL,
+						score_state TEXT NOT NULL,
+						strain REAL,
+						avg_hr INTEGER,
+						max_hr INTEGER,
+						kilojoule REAL,
+						percent_recorded REAL,
+						distance_meter REAL,
+						altitude_gain_meter REAL,
+						altitude_change_meter REAL,
+						zone_zero_milli INTEGER,
+						zone_one_milli INTEGER,
+						zone_two_milli INTEGER,
+						zone_three_milli INTEGER,
+						zone_four_milli INTEGER,
+						zone_five_milli INTEGER,
+						synced_at TEXT DEFAULT CURRENT_TIMESTAMP
+					);
+					INSERT INTO workouts_new (${cols}) SELECT ${cols} FROM workouts;
+					DROP TABLE workouts;
+					ALTER TABLE workouts_new RENAME TO workouts;
+					CREATE INDEX IF NOT EXISTS idx_workouts_start ON workouts(start_time);
+					CREATE INDEX IF NOT EXISTS idx_workouts_sport ON workouts(sport_id);
+				`);
+			})();
 		}
 
 		const recoveryCols = this.db.prepare("PRAGMA table_info(recovery)").all() as { name: string }[];
@@ -393,7 +435,7 @@ export class WhoopDatabase {
 				stmt.run(
 					w.id,
 					w.user_id,
-					w.sport_id,
+					w.sport_id ?? null,
 					w.sport_name ?? null,
 					w.start,
 					w.end,
