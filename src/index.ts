@@ -120,6 +120,19 @@ function cleanupStaleSessions(): void {
 
 setInterval(cleanupStaleSessions, 5 * 60 * 1000);
 
+// Background sync so history keeps accumulating (and the Whoop refresh token
+// keeps getting used) even when nobody asks Claude for data. smartSync is
+// gap-aware, so a missed run is simply covered by the next one.
+const BACKGROUND_SYNC_MS = 6 * 60 * 60 * 1000;
+setInterval(() => {
+	const tokens = db.getTokens();
+	if (!tokens) return;
+	client.setTokens(tokens);
+	sync.smartSync()
+		.then(result => console.log(JSON.stringify({ event: 'background_sync', timestamp: new Date().toISOString(), type: result.type, stats: result.stats ?? null })))
+		.catch(error => console.log(JSON.stringify({ event: 'background_sync_failed', timestamp: new Date().toISOString(), error: error instanceof Error ? error.message : String(error) })));
+}, BACKGROUND_SYNC_MS);
+
 function validateDays(value: unknown, defaultDays = 14): number {
 	if (value === undefined || value === null) return defaultDays;
 	const num = typeof value === 'number' ? value : Number.parseInt(String(value), 10);

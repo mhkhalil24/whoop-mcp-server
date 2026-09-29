@@ -29,9 +29,12 @@ export class WhoopSync {
 	// sync_data(full:true). Well under Whoop's 100 req/min rate limit.
 	private readonly SYNC_FRESHNESS_MS = 10 * 60 * 1000;
 
-	// Full-sync threshold. If the last sync is older than this, smartSync()
-	// performs a full-history sync (MAX_HISTORY_DAYS) instead of the default 7-day quick sync.
-	private readonly FULL_SYNC_THRESHOLD_HOURS = 24;
+	// Every incremental sync re-fetches at least this many days so records Whoop
+	// re-scores after the fact (PENDING_SCORE -> SCORED) get updated.
+	private readonly MIN_SYNC_DAYS = 7;
+
+	// Extra overlap added on top of the gap since the last successful sync.
+	private readonly GAP_BUFFER_DAYS = 2;
 
 	constructor(client: WhoopClient, db: WhoopDatabase) {
 		this.client = client;
@@ -76,6 +79,15 @@ export class WhoopSync {
 			measurementSynced = true;
 		}
 
+		// Only advance last_sync_at when every collection came back. Otherwise the
+		// next sync would start from here and permanently skip what just failed.
+		const failed = (
+			[['cycles', cycles], ['recoveries', recoveries], ['sleeps', sleeps], ['workouts', workouts]] as const
+		).filter(([, r]) => r.status === 'rejected').map(([name]) => name);
+		if (failed.length > 0) {
+			throw new Error(`Sync incomplete, will retry from the last good sync. Failed: ${failed.join(', ')}`);
+		}
+
 		this.db.updateSyncState(
 			startDate.toISOString().split('T')[0],
 			endDate.toISOString().split('T')[0]
@@ -91,17 +103,6 @@ export class WhoopSync {
 		};
 	}
 
-	async quickSync(): Promise<SyncStats> {
-		return this.syncDays(7);
-	}
-
-	needsFullSync(): boolean {
-		const state = this.db.getSyncState();
-		if (!state.lastSyncAt) return true;
-		const lastSync = new Date(state.lastSyncAt);
-		const hoursSinceSync = (Date.now() - lastSync.getTime()) / (1000 * 60 * 60);
-		return hoursSinceSync > this.FULL_SYNC_THRESHOLD_HOURS;
-	}
 
 	async smartSync(): Promise<SmartSyncResult> {
 		const state = this.db.getSyncState();
@@ -125,7 +126,11 @@ export class WhoopSync {
 			return { type: 'skip' };
 		}
 
-		const stats = await this.quickSync();
+		// Backfill: cover the whole gap since the last successful sync (plus a
+		// buffer), so asking again after weeks or months leaves no holes.
+		const gapDays = Math.ceil(msSinceSync / (24 * 60 * 60 * 1000)) + this.GAP_BUFFER_DAYS;
+		const days = Math.min(MAX_HISTORY_DAYS, Math.max(this.MIN_SYNC_DAYS, gapDays));
+		const stats = await this.syncDays(days);
 		return { type: 'quick', stats };
 	}
 }
