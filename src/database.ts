@@ -577,6 +577,17 @@ export class WhoopDatabase {
 		`).all(days) as DbCycle[];
 	}
 
+	// Full copy of the Whoop data for offline backup. Deliberately excludes the
+	// tokens table so an export never carries OAuth credentials.
+	exportAll(): Record<string, unknown[]> {
+		const tables = ['cycles', 'recovery', 'sleep', 'workouts', 'profile', 'body_measurement', 'sync_state'] as const;
+		const out: Record<string, unknown[]> = {};
+		for (const table of tables) {
+			out[table] = this.db.prepare(`SELECT * FROM ${table}`).all();
+		}
+		return out;
+	}
+
 	close(): void {
 		this.db.close();
 	}

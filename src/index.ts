@@ -638,6 +638,19 @@ async function main(): Promise<void> {
 			res.json({ status: 'ok', authenticated: Boolean(db.getTokens()) });
 		});
 
+		// Backup endpoint: all stored Whoop data (no tokens), same bearer auth as /mcp.
+		app.get('/export', (req: Request, res: Response) => {
+			if (!isAuthorized(req.headers.authorization)) {
+				res.status(401).json({ error: 'unauthorized' });
+				return;
+			}
+			res.json({
+				exported_at: new Date().toISOString(),
+				server: { name: SERVER_NAME, version: SERVER_VERSION },
+				...db.exportAll(),
+			});
+		});
+
 		app.get('/.well-known/oauth-protected-resource', (_req: Request, res: Response) => {
 			res.status(200).json({});
 		});
