@@ -588,6 +588,21 @@ export class WhoopDatabase {
 		return out;
 	}
 
+	// Same as exportAll, limited to records from the last `days` days (profile,
+	// body measurement and sync state are always included in full).
+	exportRecent(days: number): Record<string, unknown[]> {
+		const since = `-${days} days`;
+		return {
+			cycles: this.db.prepare("SELECT * FROM cycles WHERE start_time >= DATE('now', ?) ORDER BY start_time").all(since),
+			recovery: this.db.prepare("SELECT * FROM recovery WHERE created_at >= DATE('now', ?) ORDER BY created_at").all(since),
+			sleep: this.db.prepare("SELECT * FROM sleep WHERE start_time >= DATE('now', ?) ORDER BY start_time").all(since),
+			workouts: this.db.prepare("SELECT * FROM workouts WHERE start_time >= DATE('now', ?) ORDER BY start_time").all(since),
+			profile: this.db.prepare('SELECT * FROM profile').all(),
+			body_measurement: this.db.prepare('SELECT * FROM body_measurement').all(),
+			sync_state: this.db.prepare('SELECT * FROM sync_state').all(),
+		};
+	}
+
 	close(): void {
 		this.db.close();
 	}

@@ -270,6 +270,15 @@ function createMcpServer(): Server {
 				},
 			},
 			{
+				name: 'export_data',
+				description: 'Returns a compact JSON backup of stored Whoop data for the last N days: cycles, recovery, sleep and workouts in that window, plus profile, body_measurement and sync_state. Syncs first. Intended to be saved verbatim as a backup file; never includes OAuth tokens.',
+				inputSchema: {
+					type: 'object',
+					properties: { days: { type: 'number', description: 'Number of days to include (default: 14, max: 365)' } },
+					required: [],
+				},
+			},
+			{
 				name: 'get_auth_url',
 				description: 'Get the Whoop authorization URL to connect your account.',
 				inputSchema: { type: 'object', properties: {}, required: [] },
@@ -297,7 +306,7 @@ function createMcpServer(): Server {
 				'get_today', 'get_recovery_trends', 'get_sleep_analysis', 'get_strain_history',
 				'get_workouts', 'get_workout_detail', 'get_cycle_detail', 'get_sleep_detail',
 				'get_sleep_for_cycle', 'get_recovery_for_cycle',
-				'get_profile', 'get_body_measurement',
+				'get_profile', 'get_body_measurement', 'export_data',
 			];
 			if (dataTools.includes(name)) {
 				const tokens = db.getTokens();
@@ -530,6 +539,22 @@ function createMcpServer(): Server {
 								full_sync: full,
 								stats: stats ?? null,
 							}, null, 2),
+						}],
+					};
+				}
+
+				case 'export_data': {
+					const days = validateDays(typedArgs.days);
+					const now = new Date();
+					const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+					return {
+						content: [{
+							type: 'text',
+							text: JSON.stringify({
+								exported_at: now.toISOString(),
+								window: { days, from: from.toISOString().split('T')[0], to: now.toISOString().split('T')[0] },
+								...db.exportRecent(days),
+							}),
 						}],
 					};
 				}
