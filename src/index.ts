@@ -37,16 +37,18 @@ const config = {
 	dbPath: process.env.DB_PATH ?? './whoop.db',
 	port: Number.parseInt(process.env.PORT ?? '3000', 10),
 	mode: process.env.MCP_MODE ?? 'http',
-	// The MCP endpoint is served at /mcp/<MCP_PATH_SECRET>. Anyone without the
-	// secret gets a 404, so the URL itself is the credential. Required in http mode.
-	mcpPathSecret: process.env.MCP_PATH_SECRET ?? '',
+	// Every /mcp request must carry `Authorization: Bearer <MCP_AUTH_TOKEN>`
+	// (a Claude connector "Request header"). Required in http mode.
+	mcpAuthToken: process.env.MCP_AUTH_TOKEN ?? '',
 };
 
-function secretMatches(candidate: string): boolean {
+function isAuthorized(authorizationHeader: string | undefined): boolean {
+	const match = /^Bearer (.+)$/.exec(authorizationHeader ?? '');
+	const candidate = match ? match[1] : '';
 	// Hash both sides so timingSafeEqual always compares equal-length buffers.
 	const a = createHash('sha256').update(candidate).digest();
-	const b = createHash('sha256').update(config.mcpPathSecret).digest();
-	return timingSafeEqual(a, b);
+	const b = createHash('sha256').update(config.mcpAuthToken).digest();
+	return timingSafeEqual(a, b) && candidate.length > 0;
 }
 
 // OAuth `state` values issued by get_auth_url, checked on /callback so nobody
@@ -587,13 +589,13 @@ async function main(): Promise<void> {
 		await server.connect(transport);
 		process.stderr.write('Whoop MCP server running on stdio\n');
 	} else {
-		if (config.mcpPathSecret.length < 32) {
-			throw new Error('MCP_PATH_SECRET must be set to at least 32 characters in http mode');
+		if (config.mcpAuthToken.length < 32) {
+			throw new Error('MCP_AUTH_TOKEN must be set to at least 32 characters in http mode');
 		}
 
 		const app = express();
 		app.use((req, res, next) => {
-			if (req.path.startsWith('/mcp/')) return next();
+			if (req.path === '/mcp') return next();
 			express.json()(req, res, next);
 		});
 
@@ -630,12 +632,6 @@ async function main(): Promise<void> {
 		app.get('/.well-known/oauth-protected-resource/mcp', (_req: Request, res: Response) => {
 			res.status(200).json({});
 		});
-
-		// Clients probe metadata under the full resource path (/mcp/<secret>).
-		app.get('/.well-known/oauth-protected-resource/mcp/*', (_req: Request, res: Response) => {
-			res.status(200).json({});
-		});
-
 		app.get('/.well-known/oauth-authorization-server', (_req: Request, res: Response) => {
 			res.status(200).json({});
 		});
@@ -644,9 +640,9 @@ async function main(): Promise<void> {
 			res.status(200).json({});
 		});
 
-		app.all('/mcp/:secret', async (req: Request, res: Response) => {
-			if (!secretMatches(req.params.secret ?? '')) {
-				res.status(404).send('Not found');
+		app.all('/mcp', async (req: Request, res: Response) => {
+			if (!isAuthorized(req.headers.authorization)) {
+				res.status(401).json({ error: 'unauthorized' });
 				return;
 			}
 
